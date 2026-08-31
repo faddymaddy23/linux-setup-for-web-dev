@@ -69,7 +69,7 @@ reget "backup_2026-08-22-1026_Extreme_Ownership_Academy_e60e7df10022-db.gz"
 
 # Restore Database
 ## backup existing db
-mysqldump -h mysql.database185.svc.cluster.local -u qjzxjtmyed -p application24026 > ~/pre_restore_backup_$(date +%F).sql
+mysqldump -h <host> -u <user> -p application24026 > ~/pre_restore_backup_$(date +%F).sql
 ls -lh ~/pre_restore_backup_*.sql
 tail -5 ~/pre_restore_backup_2026-08-22.sql
 
@@ -90,11 +90,11 @@ grep -m5 "CREATE TABLE" ~/restore_db
 grep table_prefix /var/www/html/public_html/wp-config.php
 
 ## Import the database
-mysql -h mysql.database185.svc.cluster.local -u qjzxjtmyed -p application24026 < ~/restore_db
+mysql -h <host> -u <user> -p application24026 < ~/restore_db
 
 ## Verify import succeeded
-mysql -h mysql.database185.svc.cluster.local -u qjzxjtmyed -p application24026 -e "SHOW TABLES;"
-mysql -h mysql.database185.svc.cluster.local -u qjzxjtmyed -p application24026 -e "SELECT option_name, option_value FROM wp_options WHERE option_name IN ('siteurl','home');"
+mysql -h <host> -u <user> -p application24026 -e "SHOW TABLES;"
+mysql -h <host> -u <user> -p application24026 -e "SELECT option_name, option_value FROM wp_options WHERE option_name IN ('siteurl','home');"
 
 ## Use WP-CLI for search-replace
 which wp
@@ -162,3 +162,55 @@ rm -rf ~/restore_tmp
 
 ## After verifying everything delete the initial db backup as well
 rm -f ~/pre_restore_backup_*.sql
+
+
+
+
+# rsync - final migration
+tmux ls
+tmux kill-session -t wp_migration
+tmux new -s rsync
+
+## Create a new backup for second migration and fetch it
+rsync -avz --progress \
+  -e "ssh -p <port> -i ~/.ssh/file_name" \
+  <user>@<server>:/var/www/webroot/ROOT/wp-content/updraft/backup_2026-08-31-0333_Extreme_Ownership_Academy_68299525f41a-db.gz \
+  /var/www/html/public_html/wp-content/updraft/
+
+cd /var/www/html/public_html/wp-content/updraft
+cp backup_2026-08-31-0333_Extreme_Ownership_Academy_68299525f41a-db.gz ~/restore_db.gz
+cd ~
+gunzip restore_db.gz
+ls -lh ~/restore_db
+head -50 ~/restore_db
+
+mysql -h <host> -u <user> -p application24026 < ~/restore_db
+
+wp search-replace 'academy.echelonfront.com' 'app24026.cloudwayssites.com' --all-tables --precise --recurse-objects --path=/var/www/html/public_html --allow-root
+
+wp option get siteurl --path=/var/www/html/public_html --allow-root
+wp option get home --path=/var/www/html/public_html --allow-root
+
+rsync -avn --checksum --delete \
+  --exclude='updraft/' \
+  --exclude='cache/' \
+  --exclude='object-cache.php' \
+  --exclude='wp-config.php' \
+  source_server:/var/www/webroot/ROOT/wp-content/ \
+  /var/www/html/public_html/wp-content/ \
+  > ~/rsync_dryrun_$(date +%F_%H%M).log
+
+less ~/rsync_dryrun_*.log
+grep '^deleting' ~/rsync_dryrun_*.log
+
+rsync -avz --checksum --delete --progress \
+  --exclude='updraft/' \
+  --exclude='cache/' \
+  --exclude='object-cache.php' \
+  --exclude='wp-config.php' \
+  source_server:/var/www/webroot/ROOT/wp-content/ \
+  /var/www/html/public_html/wp-content/ \
+  2>&1 | tee ~/rsync_real_$(date +%F_%H%M).log
+
+wp cache flush --path=/var/www/html/public_html --allow-root
+wp rewrite flush --path=/var/www/html/public_html --allow-root
